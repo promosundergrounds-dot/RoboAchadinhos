@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -43,6 +44,7 @@ type searchResponse struct {
 		OriginalPrice float64 `json:"original_price"`
 		Thumbnail     string  `json:"thumbnail"`
 		Permalink     string  `json:"permalink"`
+		CategoryID    string  `json:"category_id"`
 	} `json:"results"`
 }
 
@@ -198,9 +200,11 @@ func (c *MeliClient) parseSearchResponse(resp *http.Response) ([]models.Offer, e
 	for _, item := range parsed.Results {
 		offers = append(offers, models.Offer{
 			ID:            item.ID,
+			MeliID:        item.ID,
 			Title:         item.Title,
 			Price:         item.Price,
 			OriginalPrice: item.OriginalPrice,
+			Category:      item.CategoryID,
 			ImageURL:      upgradeThumbnail(item.Thumbnail),
 			Permalink:     item.Permalink,
 		})
@@ -344,4 +348,155 @@ func cloneRequest(req *http.Request) (*http.Request, error) {
 	req.Body = io.NopCloser(bytes.NewReader(content))
 
 	return clone, nil
+}
+
+// GetItemDetails fetches item details from MELI API to verify price and stock
+func (c *MeliClient) GetItemDetails(ctx context.Context, itemID string) (map[string]interface{}, error) {
+	if itemID == "" {
+		return nil, fmt.Errorf("item ID is required")
+	}
+
+	endpoint := c.baseURL + "/items/" + itemID
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		return nil, err
+	}
+
+	req.Header.Set("Accept", "application/json")
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("get item details failed status=%d body=%s", resp.StatusCode, strings.TrimSpace(string(body)))
+	}
+
+	var result map[string]interface{}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return nil, err
+	}
+
+	return result, nil
+}
+
+// CreateShortURL generates an affiliate short URL for tracking commissions
+func (c *MeliClient) CreateShortURL(ctx context.Context, longURL string) (string, error) {
+	if c.getAccessToken() == "" {
+		return "", fmt.Errorf("access token is required for short URL generation")
+	}
+
+	if longURL == "" {
+		return "", fmt.Errorf("long URL is required")
+	}
+
+	payload := map[string]interface{}{
+		"url": longURL,
+	}
+
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return "", err
+	}
+
+	endpoint := c.baseURL + "/affiliates/short_urls"
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
+	if err != nil {
+		return "", err
+	}
+
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+c.getAccessToken())
+	req.Header.Set("Accept", "application/json")
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated {
+		bodyContent, _ := io.ReadAll(resp.Body)
+		return "", fmt.Errorf("short url creation failed status=%d body=%s", resp.StatusCode, strings.TrimSpace(string(bodyContent)))
+	}
+
+	var result map[string]interface{}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return "", err
+	}
+
+	if shortURL, ok := result["short_url"].(string); ok && shortURL != "" {
+		return shortURL, nil
+	}
+
+	return "", fmt.Errorf("no short_url returned from API")
+}
+
+// SearchPromotions searches for items with active promotions
+func (c *MeliClient) SearchPromotions(ctx context.Context) ([]models.Offer, error) {
+	return c.SearchWithFilters(ctx, "", "", 0, 0)
+}
+
+func (c *MeliClient) SearchWithFilters(ctx context.Context, queryStr, category string, minPrice, maxPrice int) ([]models.Offer, error) {
+	if c.getAccessToken() == "" {
+		return nil, fmt.Errorf("access token is required for promotion search")
+	}
+
+	endpoint, err := url.Parse(c.baseURL + "/sites/MLB/search")
+	if err != nil {
+		return nil, err
+	}
+
+	q := endpoint.Query()
+	q.Set("promotions", "true")
+	q.Set("sort", "price_asc")
+	q.Set("limit", "30")
+	if queryStr != "" {
+		q.Set("q", queryStr)
+	}
+	if category != "" {
+		q.Set("category", category)
+	}
+	if minPrice > 0 {
+		q.Set("price_from", strconv.Itoa(minPrice))
+	}
+	if maxPrice > 0 {
+		q.Set("price_to", strconv.Itoa(maxPrice))
+	}
+	endpoint.RawQuery = q.Encode()
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+
+	req.Header.Set("Authorization", "Bearer "+c.getAccessToken())
+	req.Header.Set("Accept", "application/json")
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("promotion search failed status=%d body=%s", resp.StatusCode, strings.TrimSpace(string(body)))
+	}
+
+	offers, err := c.parseSearchResponse(resp)
+	if err != nil {
+		return nil, err
+	}
+
+	if queryStr == "" && category == "" && minPrice == 0 && maxPrice == 0 {
+		return offers, nil
+	}
+
+	return offers, nil
 }

@@ -1,0 +1,177 @@
+definitions:
+  api.AffiliateRequest:
+    properties:
+      url:
+        type: string
+    required:
+    - url
+    type: object
+  api.AffiliateResponse:
+    properties:
+      affiliate_url:
+        type: string
+    type: object
+  api.ErrorResponse:
+    properties:
+      error:
+        type: string
+    type: object
+  api.ItemDetailResponse:
+    properties:
+      available_quantity:
+        type: integer
+      coupon:
+        type: string
+      item:
+        additionalProperties: true
+        type: object
+      sold_quantity:
+        type: integer
+    type: object
+  api.SearchOffersResponse:
+    properties:
+      offers:
+        items:
+          $ref: '#/definitions/models.Offer'
+        type: array
+    type: object
+  models.Offer:
+    properties:
+      affiliate_url:
+        type: string
+      category:
+        type: string
+      coupon:
+        type: string
+      id:
+        type: string
+      image_url:
+        type: string
+      is_full:
+        type: boolean
+      meli_id:
+        type: string
+      original_price:
+        type: number
+      permalink:
+        type: string
+      price:
+        type: number
+      title:
+        type: string
+    type: object
+info:
+  contact: {}
+paths:
+  /v1/meli/affiliate:
+    post:
+      consumes:
+      - application/json
+      description: Generate an official afiliado short URL for a normal Mercado Livre
+        URL.
+      parameters:
+      - description: URL request
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/api.AffiliateRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/api.AffiliateResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/api.ErrorResponse'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/api.ErrorResponse'
+      summary: Create affiliate short URL
+      tags:
+      - Meli
+  /v1/meli/items/{id}:
+    get:
+      description: Retrieve item details including coupon and stock information.
+      parameters:
+      - description: Item ID
+        in: path
+        name: id
+        required: true
+        type: string
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/api.ItemDetailResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/api.ErrorResponse'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/api.ErrorResponse'
+      summary: Get item details from Mercado Livre
+      tags:
+      - Meli
+  /v1/meli/search:
+    get:
+      description: Search for promoted products using Mercado Livre API with optional
+        filters.
+      parameters:
+      - description: Search query
+        in: query
+        name: q
+        required: true
+        type: string
+      - description: Category ID
+        in: query
+        name: category
+        type: string
+      - description: Minimum price
+        in: query
+        name: min_price
+        type: integer
+      - description: Maximum price
+        in: query
+        name: max_price
+        type: integer
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/api.SearchOffersResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/api.ErrorResponse'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/api.ErrorResponse'
+      summary: Search promotions in Mercado Livre
+      tags:
+      - Meli
+  /v1/offers:
+    get:
+      description: Retrieve offers already saved in SQLite.
+      responses:
+        "200":
+          description: OK
+          schema:
+            items:
+              $ref: '#/definitions/models.Offer'
+            type: array
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/api.ErrorResponse'
+      summary: List saved offers
+      tags:
+      - Offers
+swagger: "2.0"

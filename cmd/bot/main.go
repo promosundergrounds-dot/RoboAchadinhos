@@ -2,13 +2,21 @@ package main
 
 import (
 	"context"
+	"fmt"
+	"net/http"
 	"os"
 	"os/signal"
 	"strings"
 	"sync/atomic"
 	"time"
 
+	"github.com/gin-gonic/gin"
+	swaggerFiles "github.com/swaggo/files"
+	ginSwagger "github.com/swaggo/gin-swagger"
+
 	"log/slog"
+	"underground/robo-achadinhos/docs"
+	"underground/robo-achadinhos/internal/api"
 	"underground/robo-achadinhos/internal/config"
 	"underground/robo-achadinhos/internal/meli"
 	"underground/robo-achadinhos/internal/models"
@@ -43,6 +51,27 @@ func main() {
 	interval := getSearchInterval()
 	logger.Info("bot started", "interval", interval.String())
 
+	apiPort := getAPIPort()
+	docs.SwaggerInfo.Host = fmt.Sprintf("localhost:%s", apiPort)
+	docs.SwaggerInfo.BasePath = "/"
+
+	router := gin.Default()
+	router.GET("/swagger/*any", ginSwagger.WrapHandler(swaggerFiles.Handler))
+
+	handler := api.NewHandler(meliClient, storageClient, logger)
+	apiGroup := router.Group("/v1")
+	meliGroup := apiGroup.Group("/meli")
+	meliGroup.GET("/search", handler.SearchMeli)
+	meliGroup.GET("/items/:id", handler.GetItem)
+	meliGroup.POST("/affiliate", handler.CreateAffiliate)
+	apiGroup.GET("/offers", handler.ListOffers)
+
+	go func() {
+		if err := router.Run(":" + apiPort); err != nil && err != http.ErrServerClosed {
+			logger.Error("api server failed", "err", err, "port", apiPort)
+		}
+	}()
+
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, os.Kill)
 	defer stop()
 
@@ -75,10 +104,15 @@ func runCycle(ctx context.Context, cfg *config.Config, meliClient *meli.MeliClie
 
 	logger.Info("starting search cycle")
 
-	offers, err := meliClient.SearchOffers(cycleCtx)
+	// Try to search promotions via API if token is available, fall back to scraping
+	offers, err := meliClient.SearchPromotions(cycleCtx)
 	if err != nil {
-		logger.Error("failed to fetch offers", "err", err)
-		return
+		logger.Warn("API promotion search failed, falling back to scraper", "err", err)
+		offers, err = meliClient.SearchOffers(cycleCtx)
+		if err != nil {
+			logger.Error("failed to fetch offers", "err", err)
+			return
+		}
 	}
 
 	sent := false
@@ -87,28 +121,75 @@ func runCycle(ctx context.Context, cfg *config.Config, meliClient *meli.MeliClie
 			continue
 		}
 
-		isNew, err := storageClient.IsNewOffer(cycleCtx, offer.ID)
+		// Use MeliID if available, otherwise use regular ID
+		checkID := offer.MeliID
+		if checkID == "" {
+			checkID = offer.ID
+		}
+
+		isNew, err := storageClient.IsNewOffer(cycleCtx, checkID)
 		if err != nil {
-			logger.Error("checking offer existence", "err", err, "offer_id", offer.ID)
+			logger.Error("checking offer existence", "err", err, "offer_id", checkID)
 			continue
 		}
 
 		if !isNew {
+			logger.Debug("offer already posted", "offer_id", checkID)
 			continue
 		}
 
-		affiliateURL := offer.AffiliateURL(cfg.MELIAffiliateID)
+		// Verify item details and get coupon info if available
+		if offer.MeliID != "" {
+			itemDetails, err := meliClient.GetItemDetails(cycleCtx, offer.MeliID)
+			if err != nil {
+				logger.Warn("failed to fetch item details", "err", err, "item_id", offer.MeliID)
+			} else {
+				// Extract sale_terms (coupons) if available
+				if saleTerms, ok := itemDetails["sale_terms"].([]interface{}); ok && len(saleTerms) > 0 {
+					for _, term := range saleTerms {
+						if termMap, ok := term.(map[string]interface{}); ok {
+							if id, ok := termMap["id"].(string); ok && strings.Contains(strings.ToLower(id), "coupon") {
+								if val, ok := termMap["value_name"].(string); ok {
+									offer.Coupon = val
+									break
+								}
+							}
+						}
+					}
+				}
+			}
+		}
+
+		// Generate affiliate short URL
+		var affiliateURL string
+		if offer.MeliID != "" && cfg.MELIAffiliateID != "" {
+			longURL := offer.Permalink
+			if longURL == "" {
+				longURL = "https://www.mercadolivre.com.br/" + offer.MeliID
+			}
+
+			shortURL, err := meliClient.CreateShortURL(cycleCtx, longURL)
+			if err != nil {
+				logger.Warn("failed to create short URL, using long URL", "err", err, "item_id", offer.MeliID)
+				affiliateURL = longURL
+			} else {
+				affiliateURL = shortURL
+			}
+		} else {
+			affiliateURL = offer.AffiliateURL(cfg.MELIAffiliateID)
+		}
+
 		if err := telegramSender.SendOffer(cycleCtx, offer, affiliateURL); err != nil {
-			logger.Error("failed to send telegram message", "err", err, "offer_id", offer.ID)
+			logger.Error("failed to send telegram message", "err", err, "offer_id", checkID)
 			continue
 		}
 
 		if err := storageClient.MarkAsPosted(cycleCtx, offer); err != nil {
-			logger.Error("failed to save posted offer", "err", err, "offer_id", offer.ID)
+			logger.Error("failed to save posted offer", "err", err, "offer_id", checkID)
 		}
 
 		sent = true
-
+		break
 	}
 
 	if !sent {
@@ -136,6 +217,14 @@ func getSearchInterval() time.Duration {
 		return 1 * time.Minute
 	}
 	return duration
+}
+
+func getAPIPort() string {
+	port := strings.TrimSpace(os.Getenv("API_PORT"))
+	if port == "" {
+		return "8081"
+	}
+	return port
 }
 
 func offerQualifies(offer models.Offer) bool {

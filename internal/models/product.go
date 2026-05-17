@@ -4,6 +4,7 @@ import "net/url"
 
 type Offer struct {
 	ID            string  `json:"id"`
+	MeliID        string  `json:"meli_id,omitempty"`
 	Title         string  `json:"title"`
 	Price         float64 `json:"price"`
 	OriginalPrice float64 `json:"original_price"`
@@ -11,6 +12,8 @@ type Offer struct {
 	ImageURL      string  `json:"image_url"`
 	Permalink     string  `json:"permalink"`
 	Coupon        string  `json:"coupon,omitempty"`
+	Category      string  `json:"category,omitempty"`
+	AffiliateLink string  `json:"affiliate_url,omitempty"`
 }
 
 func (o Offer) AffiliateURL(affiliateID string) string {
