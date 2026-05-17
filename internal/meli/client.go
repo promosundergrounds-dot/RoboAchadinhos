@@ -270,3 +270,25 @@ func cloneRequest(req *http.Request) (*http.Request, error) {
 
 	return clone, nil
 }
+
+// Exemplo do que precisa ter no seu internal/meli/client.go
+func (c *MeliClient) RefreshToken() error {
+	url := "https://api.mercadolibre.com/oauth/token"
+
+	// Dados para o POST
+	data := url.Values{}
+	data.Set("grant_type", "refresh_token")
+	data.Set("client_id", c.Config.ClientID)
+	data.Set("client_secret", c.Config.ClientSecret)
+	data.Set("refresh_token", c.Config.RefreshToken)
+
+	resp, err := http.PostForm(url, data)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	// Aqui você decodifica o novo access_token e o novo refresh_token
+	// IMPORTANTE: Você precisa salvar o novo refresh_token no seu .env ou banco!
+	return nil
+}
