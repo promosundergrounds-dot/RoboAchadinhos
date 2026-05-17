@@ -47,12 +47,19 @@ func (s *Sender) SendOffer(ctx context.Context, offer models.Offer, affiliateURL
 		captionLines = append(captionLines, fmt.Sprintf("📉 <b>Desconto disponível</b>"))
 	}
 
+	if offer.Coupon != "" {
+		// Exibe o cupom real capturado com formatação de destaque
+		captionLines = append(captionLines, fmt.Sprintf("🎟️ <b>CUPOM:</b> <code>%s</code>", html.EscapeString(offer.Coupon)))
+	} else {
+		// Fallback caso não tenha cupom específico capturado
+		captionLines = append(captionLines, "")
+	}
+
 	if offer.IsFull {
 		captionLines = append(captionLines, "🚚 <b>Frete Grátis</b>")
 	}
 
 	captionLines = append(captionLines,
-		"🎟️ Verifique se há cupom disponível na página!",
 		fmt.Sprintf("🔗 <a href=\"%s\">Link de Compra</a>", html.EscapeString(affiliateURL)),
 	)
 
