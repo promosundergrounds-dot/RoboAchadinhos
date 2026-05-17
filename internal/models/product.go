@@ -10,6 +10,7 @@ type Offer struct {
 	IsFull        bool    `json:"is_full"`
 	ImageURL      string  `json:"image_url"`
 	Permalink     string  `json:"permalink"`
+	coupon        string  `json:"coupon,omitempty"`
 }
 
 func (o Offer) AffiliateURL(affiliateID string) string {

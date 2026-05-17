@@ -108,7 +108,7 @@ func runCycle(ctx context.Context, cfg *config.Config, meliClient *meli.MeliClie
 		}
 
 		sent = true
-		break
+
 	}
 
 	if !sent {
@@ -142,11 +142,10 @@ func offerQualifies(offer models.Offer) bool {
 	if offer.OriginalPrice <= 0 {
 		return false
 	}
-
-	if offer.Price <= 10 {
+	// Permite produtos a partir de 2 reais para ser bem abrangente
+	if offer.Price <= 2 {
 		return false
 	}
-
 	discount := ((offer.OriginalPrice - offer.Price) / offer.OriginalPrice) * 100
-	return discount > 5
+	return discount >= 5 // 5% de desconto já é uma oferta
 }

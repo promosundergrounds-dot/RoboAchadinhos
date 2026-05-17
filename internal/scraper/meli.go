@@ -96,7 +96,7 @@ func SearchOffers(ctx context.Context) ([]models.Offer, error) {
 		if title == "" || priceRaw == "" {
 			return
 		}
-
+		coupon := strings.TrimSpace(e.ChildText(".poly-coupons__pill, .poly-component__coupons"))
 		mu.Lock()
 		rawProducts = append(rawProducts, map[string]string{
 			"title":          title,
@@ -106,12 +106,13 @@ func SearchOffers(ctx context.Context) ([]models.Offer, error) {
 			"full":           fullBadge,
 			"original_price": originalPriceRaw,
 			"price":          priceRaw,
+			"coupon":         coupon,
 		})
 		mu.Unlock()
 	})
 	visitErr := make(chan error, 1)
 	go func() {
-		visitErr <- collector.Visit("https://www.mercadolivre.com.br/ofertas")
+		visitErr <- collector.Visit("https://www.mercadolivre.com.br/ofertas?container_id=OFFERS_LISTING&page=1")
 		collector.Wait()
 	}()
 
