@@ -68,7 +68,7 @@ func runCycle(ctx context.Context, cfg *config.Config, meliClient *meli.MeliClie
 	}
 	defer running.Store(false)
 
-	cycleCtx, cancel := context.WithTimeout(ctx, 2*time.Minute)
+	cycleCtx, cancel := ensureMinTimeout(ctx, 2*time.Minute)
 	defer cancel()
 
 	logger.Info("starting search cycle")
@@ -114,6 +114,13 @@ func runCycle(ctx context.Context, cfg *config.Config, meliClient *meli.MeliClie
 	}
 
 	logger.Info("search cycle completed", "offers_total", len(offers))
+}
+
+func ensureMinTimeout(ctx context.Context, min time.Duration) (context.Context, context.CancelFunc) {
+	if deadline, ok := ctx.Deadline(); ok && time.Until(deadline) >= min {
+		return ctx, func() {}
+	}
+	return context.WithTimeout(ctx, min)
 }
 
 func offerQualifies(offer models.Offer) bool {

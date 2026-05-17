@@ -4,67 +4,86 @@ import (
 	"context"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
-	"github.com/chromedp/chromedp"
 	"underground/robo-achadinhos/internal/models"
+
+	"github.com/gocolly/colly/v2"
 )
 
 func SearchOffers(ctx context.Context) ([]models.Offer, error) {
-	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
-	defer cancel()
+	if deadline, ok := ctx.Deadline(); !ok || time.Until(deadline) < 2*time.Minute {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, 2*time.Minute)
+		defer cancel()
+	}
 
-	allocatorCtx, cancelAllocator := chromedp.NewExecAllocator(ctx,
-		append(chromedp.DefaultExecAllocatorOptions[:],
-			chromedp.Flag("headless", true),
-			chromedp.Flag("disable-gpu", true),
-			chromedp.Flag("no-sandbox", true),
-			chromedp.Flag("disable-dev-shm-usage", true),
-		)...,
+	collector := colly.NewCollector(
+		colly.AllowedDomains("www.mercadolivre.com.br", "mercadolivre.com.br"),
+		colly.UserAgent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"),
 	)
-	defer cancelAllocator()
-
-	browserCtx, cancelBrowser := chromedp.NewContext(allocatorCtx)
-	defer cancelBrowser()
+	collector.SetRequestTimeout(60 * time.Second)
+	_ = collector.Limit(&colly.LimitRule{
+		DomainGlob:  "*.mercadolivre.com.br",
+		Parallelism: 1,
+		Delay:       2 * time.Second,
+	})
 
 	var rawProducts []map[string]string
-	pageURL := "https://www.mercadolivre.com.br/ofertas"
+	var mu sync.Mutex
+	var scrapeErr error
 
-	script := `(function() {
-		const products = [];
-		document.querySelectorAll('.promotion-item').forEach(item => {
-			const titleEl = item.querySelector('h2') || item.querySelector('.promotion-item__title') || item.querySelector('.promotion-item__name') || item.querySelector('a');
-			const linkEl = item.querySelector('a');
-			const imageEl = item.querySelector('img');
-			const originalEl = item.querySelector('.promotion-item__price--before, .promotion-item__original-price, .promotion-item__price-before, .promotion-item__old-price, .promotion-item__price__before');
-			const priceEl = item.querySelector('.promotion-item__price--current, .promotion-item__price--sale, .promotion-item__price, .promotion-item__final-price, .promotion-item__discounted-price, .promotion-item__price__current');
-			const title = titleEl ? titleEl.innerText.trim() : '';
-			const permalink = linkEl ? linkEl.href : '';
-			let thumbnail = '';
-			if (imageEl) {
-				thumbnail = imageEl.src || imageEl.dataset.src || imageEl.getAttribute('src') || '';
-			}
-			const original_price = originalEl ? originalEl.innerText.trim() : '';
-			const price = priceEl ? priceEl.innerText.trim() : '';
-			products.push({
-				title,
-				original_price,
-				price,
-				permalink,
-				thumbnail,
-			});
-		});
-		return products;
-	})()`
+	collector.OnRequest(func(r *colly.Request) {
+		if ctx.Err() != nil {
+			r.Abort()
+		}
+	})
 
-	err := chromedp.Run(browserCtx,
-		chromedp.Navigate(pageURL),
-		chromedp.WaitVisible(`.promotion-item`, chromedp.ByQuery),
-		chromedp.Sleep(2*time.Second),
-		chromedp.Evaluate(script, &rawProducts),
-	)
-	if err != nil {
-		return nil, err
+	collector.OnError(func(_ *colly.Response, err error) {
+		if scrapeErr == nil {
+			scrapeErr = err
+		}
+	})
+
+	collector.OnHTML(".promotion-item", func(e *colly.HTMLElement) {
+		title := strings.TrimSpace(e.ChildText("h2, .promotion-item__title, .promotion-item__name, a"))
+		permalink := strings.TrimSpace(e.ChildAttr("a", "href"))
+		thumbnail := strings.TrimSpace(e.ChildAttr("img", "src"))
+		if thumbnail == "" {
+			thumbnail = strings.TrimSpace(e.ChildAttr("img", "data-src"))
+		}
+		originalPriceRaw := strings.TrimSpace(e.ChildText(".promotion-item__price--before, .promotion-item__original-price, .promotion-item__price-before, .promotion-item__old-price, .promotion-item__price__before"))
+		priceRaw := strings.TrimSpace(e.ChildText(".promotion-item__price--current, .promotion-item__price--sale, .promotion-item__price, .promotion-item__final-price, .promotion-item__discounted-price, .promotion-item__price__current"))
+
+		mu.Lock()
+		rawProducts = append(rawProducts, map[string]string{
+			"title":          title,
+			"permalink":      permalink,
+			"thumbnail":      thumbnail,
+			"original_price": originalPriceRaw,
+			"price":          priceRaw,
+		})
+		mu.Unlock()
+	})
+
+	visitErr := make(chan error, 1)
+	go func() {
+		visitErr <- collector.Visit("https://www.mercadolivre.com.br/ofertas")
+		collector.Wait()
+	}()
+
+	select {
+	case err := <-visitErr:
+		if err != nil {
+			return nil, err
+		}
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+
+	if scrapeErr != nil {
+		return nil, scrapeErr
 	}
 
 	offers := make([]models.Offer, 0, len(rawProducts))
