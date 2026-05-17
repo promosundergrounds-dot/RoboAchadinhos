@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"os/signal"
+	"strings"
 	"sync/atomic"
 	"time"
 
@@ -39,7 +40,8 @@ func main() {
 		os.Exit(1)
 	}
 
-	logger.Info("bot started", "interval", "5m")
+	interval := getSearchInterval()
+	logger.Info("bot started", "interval", interval.String())
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, os.Kill)
 	defer stop()
@@ -47,7 +49,7 @@ func main() {
 	var running atomic.Bool
 	go runCycle(ctx, cfg, meliClient, storageClient, telegramSender, logger, &running)
 
-	ticker := time.NewTicker(5 * time.Minute)
+	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 
 	for {
@@ -123,15 +125,28 @@ func ensureMinTimeout(ctx context.Context, min time.Duration) (context.Context, 
 	return context.WithTimeout(ctx, min)
 }
 
+func getSearchInterval() time.Duration {
+	value := strings.TrimSpace(os.Getenv("SEARCH_INTERVAL"))
+	if value == "" {
+		return 1 * time.Minute
+	}
+
+	duration, err := time.ParseDuration(value)
+	if err != nil || duration <= 0 {
+		return 1 * time.Minute
+	}
+	return duration
+}
+
 func offerQualifies(offer models.Offer) bool {
 	if offer.OriginalPrice <= 0 {
 		return false
 	}
 
-	if offer.Price < 30 {
+	if offer.Price < 10 {
 		return false
 	}
 
 	discount := ((offer.OriginalPrice - offer.Price) / offer.OriginalPrice) * 100
-	return discount >= 20
+	return discount >= 10
 }

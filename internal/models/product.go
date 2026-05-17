@@ -7,6 +7,7 @@ type Offer struct {
 	Title         string  `json:"title"`
 	Price         float64 `json:"price"`
 	OriginalPrice float64 `json:"original_price"`
+	IsFull        bool    `json:"is_full"`
 	ImageURL      string  `json:"image_url"`
 	Permalink     string  `json:"permalink"`
 }

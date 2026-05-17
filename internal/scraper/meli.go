@@ -2,6 +2,9 @@ package scraper
 
 import (
 	"context"
+	"log"
+	"os"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -46,21 +49,34 @@ func SearchOffers(ctx context.Context) ([]models.Offer, error) {
 		}
 	})
 
-	collector.OnHTML(".promotion-item", func(e *colly.HTMLElement) {
-		title := strings.TrimSpace(e.ChildText("h2, .promotion-item__title, .promotion-item__name, a"))
-		permalink := strings.TrimSpace(e.ChildAttr("a", "href"))
-		thumbnail := strings.TrimSpace(e.ChildAttr("img", "src"))
+	collector.OnHTML(".poly-card__content", func(e *colly.HTMLElement) {
+		title := strings.TrimSpace(e.ChildText(".poly-component__title"))
+		permalink := strings.TrimSpace(e.ChildAttr(".poly-component__title", "href"))
+		thumbnail := strings.TrimSpace(e.ChildAttr(".poly-component__picture", "src"))
 		if thumbnail == "" {
-			thumbnail = strings.TrimSpace(e.ChildAttr("img", "data-src"))
+			thumbnail = strings.TrimSpace(e.ChildAttr(".poly-component__picture", "data-src"))
 		}
-		originalPriceRaw := strings.TrimSpace(e.ChildText(".promotion-item__price--before, .promotion-item__original-price, .promotion-item__price-before, .promotion-item__old-price, .promotion-item__price__before"))
-		priceRaw := strings.TrimSpace(e.ChildText(".promotion-item__price--current, .promotion-item__price--sale, .promotion-item__price, .promotion-item__final-price, .promotion-item__discounted-price, .promotion-item__price__current"))
+		if thumbnail == "" {
+			thumbnail = strings.TrimSpace(e.ChildAttr(".poly-component__picture", "data-id"))
+		}
+		if thumbnail == "" {
+			thumbnail = strings.TrimSpace(e.ChildAttr("img.poly-component__picture", "src"))
+		}
+		if thumbnail == "" {
+			thumbnail = strings.TrimSpace(e.ChildAttr("img.poly-component__picture", "data-src"))
+		}
+		seller := strings.TrimSpace(e.ChildText(".ui-search-official-store-label, .ui-search-official-store-tag, .promotion-item__seller, .promotion-item__seller-name, .ui-search-item__group__element, .andes-badge__text, .ui-search-badge__subtitle, .ui-search-badge__text"))
+		fullBadge := strings.TrimSpace(e.ChildText(".ui-search-full, .promotion-item__fulfillment, .promotion-item__badge-full, .promotion-item__badge, .andes-badge__text, .ui-search-badge__subtitle, .ui-search-badge__text"))
+		originalPriceRaw := strings.TrimSpace(e.ChildText(".andes-money-amount--previous .andes-money-amount__fraction"))
+		priceRaw := strings.TrimSpace(e.ChildText(".poly-price__current .andes-money-amount__fraction"))
 
 		mu.Lock()
 		rawProducts = append(rawProducts, map[string]string{
 			"title":          title,
 			"permalink":      permalink,
 			"thumbnail":      thumbnail,
+			"seller":         seller,
+			"full":           fullBadge,
 			"original_price": originalPriceRaw,
 			"price":          priceRaw,
 		})
@@ -86,25 +102,97 @@ func SearchOffers(ctx context.Context) ([]models.Offer, error) {
 		return nil, scrapeErr
 	}
 
-	offers := make([]models.Offer, 0, len(rawProducts))
+	minDiscount := getMinDiscountPercent()
+	type scoredOffer struct {
+		offer    models.Offer
+		score    int
+		priority string
+	}
+
+	scoredOffers := make([]scoredOffer, 0, len(rawProducts))
 	for _, raw := range rawProducts {
 		price := parseCurrency(raw["price"])
 		originalPrice := parseCurrency(raw["original_price"])
-		if raw["title"] == "" || raw["permalink"] == "" || price <= 0 {
+		discount := 0.0
+		if originalPrice > 0 {
+			discount = ((originalPrice - price) / originalPrice) * 100
+		}
+		seller := strings.TrimSpace(raw["seller"])
+		full := strings.Contains(strings.ToLower(raw["full"]), "full")
+		preferredSeller := isPreferredSeller(seller)
+		priority := "normal"
+		score := 0
+		if full {
+			score += 100
+			priority = "full"
+		}
+		if preferredSeller {
+			score += 10
+			if priority == "normal" {
+				priority = "preferred_seller"
+			}
+		}
+
+		log.Printf("[DEBUG] Analisando produto: %s | Preço: %.2f", raw["title"], price)
+		log.Printf("DEBUG product found: title=%q price=%.2f original=%.2f discount=%.2f%% seller=%q full=%t priority=%s permalink=%q",
+			raw["title"], price, originalPrice, discount, seller, full, priority, raw["permalink"])
+
+		if raw["title"] == "" || raw["permalink"] == "" {
+			log.Printf("DEBUG discard: missing title or permalink seller=%q full=%t", seller, full)
+			continue
+		}
+		if price <= 0 || originalPrice <= 0 {
+			log.Printf("DEBUG discard: invalid pricing price=%.2f original=%.2f seller=%q full=%t", price, originalPrice, seller, full)
+			continue
+		}
+		if discount < minDiscount {
+			log.Printf("DEBUG discard: discount below threshold (%.2f%% < %.2f%%) seller=%q full=%t", discount, minDiscount, seller, full)
 			continue
 		}
 
-		offers = append(offers, models.Offer{
-			ID:            raw["permalink"],
-			Title:         raw["title"],
-			Price:         price,
-			OriginalPrice: originalPrice,
-			ImageURL:      upgradeThumbnail(raw["thumbnail"]),
-			Permalink:     raw["permalink"],
+		scoredOffers = append(scoredOffers, scoredOffer{
+			offer: models.Offer{
+				ID:            raw["permalink"],
+				Title:         raw["title"],
+				Price:         price,
+				OriginalPrice: originalPrice,
+				IsFull:        full,
+				ImageURL:      upgradeThumbnail(raw["thumbnail"]),
+				Permalink:     raw["permalink"],
+			},
+			score:    score,
+			priority: priority,
 		})
 	}
 
+	sort.SliceStable(scoredOffers, func(i, j int) bool {
+		return scoredOffers[i].score > scoredOffers[j].score
+	})
+
+	offers := make([]models.Offer, 0, len(scoredOffers))
+	for _, scored := range scoredOffers {
+		offers = append(offers, scored.offer)
+	}
+
 	return offers, nil
+}
+
+func getMinDiscountPercent() float64 {
+	const defaultDiscount = 5.0
+	value := strings.TrimSpace(os.Getenv("MIN_DISCOUNT_PERCENT"))
+	if value == "" {
+		return defaultDiscount
+	}
+	parsed, err := strconv.ParseFloat(value, 64)
+	if err != nil || parsed <= 0 {
+		return defaultDiscount
+	}
+	return parsed
+}
+
+func isPreferredSeller(seller string) bool {
+	lower := strings.ToLower(strings.TrimSpace(seller))
+	return strings.Contains(lower, "loja oficial") || strings.Contains(lower, "lojas oficiais") || strings.Contains(lower, "mercado líder platinum") || strings.Contains(lower, "mercado lider platinum") || strings.Contains(lower, "mercado líder") || strings.Contains(lower, "mercado lider")
 }
 
 func parseCurrency(value string) float64 {
