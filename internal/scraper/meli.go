@@ -52,18 +52,12 @@ func SearchOffers(ctx context.Context) ([]models.Offer, error) {
 	collector.OnHTML(".poly-card__content", func(e *colly.HTMLElement) {
 		title := strings.TrimSpace(e.ChildText(".poly-component__title"))
 		permalink := strings.TrimSpace(e.ChildAttr(".poly-component__title", "href"))
-		thumbnail := strings.TrimSpace(e.ChildAttr(".poly-component__picture", "src"))
+		thumbnail := strings.TrimSpace(e.ChildAttr("img.poly-component__picture", "src"))
 		if thumbnail == "" {
-			thumbnail = strings.TrimSpace(e.ChildAttr(".poly-component__picture", "data-src"))
+			thumbnail = strings.TrimSpace(e.ChildAttr("img.poly-component__picture", "data-src"))
 		}
 		if thumbnail == "" {
 			thumbnail = strings.TrimSpace(e.ChildAttr(".poly-component__picture", "data-id"))
-		}
-		if thumbnail == "" {
-			thumbnail = strings.TrimSpace(e.ChildAttr("img.poly-component__picture", "src"))
-		}
-		if thumbnail == "" {
-			thumbnail = strings.TrimSpace(e.ChildAttr("img.poly-component__picture", "data-src"))
 		}
 		seller := strings.TrimSpace(e.ChildText(".ui-search-official-store-label, .ui-search-official-store-tag, .promotion-item__seller, .promotion-item__seller-name, .ui-search-item__group__element, .andes-badge__text, .ui-search-badge__subtitle, .ui-search-badge__text"))
 		fullBadge := strings.TrimSpace(e.ChildText(".ui-search-full, .promotion-item__fulfillment, .promotion-item__badge-full, .promotion-item__badge, .andes-badge__text, .ui-search-badge__subtitle, .ui-search-badge__text"))

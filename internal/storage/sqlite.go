@@ -45,9 +45,8 @@ CREATE TABLE IF NOT EXISTS offers (
 	id TEXT PRIMARY KEY,
 	title TEXT NOT NULL,
 	price REAL NOT NULL,
-	original_price REAL NOT NULL,
 	url TEXT NOT NULL,
-	posted_at DATETIME NOT NULL
+	image_url TEXT NOT NULL
 );
 `
 	_, err := db.ExecContext(ctx, statement)
@@ -67,14 +66,13 @@ func (s *Storage) IsNewOffer(ctx context.Context, id string) (bool, error) {
 }
 
 func (s *Storage) MarkAsPosted(ctx context.Context, offer models.Offer) error {
-	const statement = `INSERT INTO offers (id, title, price, original_price, url, posted_at) VALUES (?, ?, ?, ?, ?, ?)`
+	const statement = `INSERT INTO offers (id, title, price, url, image_url) VALUES (?, ?, ?, ?, ?)`
 	_, err := s.db.ExecContext(ctx, statement,
 		offer.ID,
 		offer.Title,
 		offer.Price,
-		offer.OriginalPrice,
 		offer.Permalink,
-		time.Now().UTC(),
+		offer.ImageURL,
 	)
 	if err != nil {
 		return fmt.Errorf("failed to save offer %s: %w", offer.ID, err)
