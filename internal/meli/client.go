@@ -13,11 +13,12 @@ import (
 	"sync"
 	"time"
 
-	"github.com/spf13/viper"
 	"log/slog"
 	"underground/robo-achadinhos/internal/config"
 	"underground/robo-achadinhos/internal/models"
 	"underground/robo-achadinhos/internal/scraper"
+
+	"github.com/spf13/viper"
 )
 
 type MeliClient struct {

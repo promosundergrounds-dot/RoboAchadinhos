@@ -10,8 +10,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/joho/godotenv"
 	"underground/robo-achadinhos/internal/meli"
+
+	"github.com/joho/godotenv"
 )
 
 func main() {
