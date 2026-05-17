@@ -49,20 +49,53 @@ func SearchOffers(ctx context.Context) ([]models.Offer, error) {
 		}
 	})
 
-	collector.OnHTML(".poly-card__content", func(e *colly.HTMLElement) {
+	// Mudamos o escopo para o card completo para conseguir pegar a imagem e o conteúdo
+	collector.OnHTML("div.poly-card", func(e *colly.HTMLElement) {
+
+		// 1. Título e Link (ficam dentro do wrapper do título)
 		title := strings.TrimSpace(e.ChildText(".poly-component__title"))
 		permalink := strings.TrimSpace(e.ChildAttr(".poly-component__title", "href"))
+
+		// 2. Thumbnail (agora acessível porque o escopo é o card completo)
 		thumbnail := strings.TrimSpace(e.ChildAttr("img.poly-component__picture", "src"))
-		if thumbnail == "" {
+		if thumbnail == "" || strings.HasPrefix(thumbnail, "data:") || strings.Contains(strings.ToLower(thumbnail), "placeholder") {
 			thumbnail = strings.TrimSpace(e.ChildAttr("img.poly-component__picture", "data-src"))
 		}
 		if thumbnail == "" {
-			thumbnail = strings.TrimSpace(e.ChildAttr(".poly-component__picture", "data-id"))
+			thumbnail = strings.TrimSpace(e.ChildAttr("img.poly-component__picture", "data-id"))
 		}
-		seller := strings.TrimSpace(e.ChildText(".ui-search-official-store-label, .ui-search-official-store-tag, .promotion-item__seller, .promotion-item__seller-name, .ui-search-item__group__element, .andes-badge__text, .ui-search-badge__subtitle, .ui-search-badge__text"))
-		fullBadge := strings.TrimSpace(e.ChildText(".ui-search-full, .promotion-item__fulfillment, .promotion-item__badge-full, .promotion-item__badge, .andes-badge__text, .ui-search-badge__subtitle, .ui-search-badge__text"))
+
+		// 3. Vendedor (ajustado para a nova classe poly-)
+		seller := strings.TrimSpace(e.ChildText(".poly-component__seller"))
+		if seller == "" {
+			// Fallback para os seletores antigos caso a página varie
+			seller = strings.TrimSpace(e.ChildText(".ui-search-official-store-label, .ui-search-official-store-tag, .promotion-item__seller, .promotion-item__seller-name"))
+		}
+
+		// 4. Verificação de selo FULL (Checa o atributo do SVG ou texto do andes-badge)
+		fullBadge := ""
+		if e.DOM.Find("svg[aria-label='Enviado pelo FULL']").Length() > 0 {
+			fullBadge = "FULL"
+		} else {
+			fullBadge = strings.TrimSpace(e.ChildText(".ui-search-full, .promotion-item__fulfillment, .promotion-item__badge-full"))
+		}
+
+		// 5. Preço Original (Sem centavos no HTML, vem direto da fraction)
 		originalPriceRaw := strings.TrimSpace(e.ChildText(".andes-money-amount--previous .andes-money-amount__fraction"))
-		priceRaw := strings.TrimSpace(e.ChildText(".poly-price__current .andes-money-amount__fraction"))
+
+		// 6. Preço Atual com Centavos (Garante que R$ 99,75 não vire 99)
+		priceFraction := strings.TrimSpace(e.ChildText(".poly-price__current .andes-money-amount__fraction"))
+		priceCents := strings.TrimSpace(e.ChildText(".poly-price__current .andes-money-amount__cents"))
+
+		priceRaw := priceFraction
+		if priceCents != "" {
+			priceRaw = priceFraction + "," + priceCents
+		}
+
+		// Ignora cards vazios que possam quebrar a estrutura
+		if title == "" || priceRaw == "" {
+			return
+		}
 
 		mu.Lock()
 		rawProducts = append(rawProducts, map[string]string{
@@ -76,7 +109,6 @@ func SearchOffers(ctx context.Context) ([]models.Offer, error) {
 		})
 		mu.Unlock()
 	})
-
 	visitErr := make(chan error, 1)
 	go func() {
 		visitErr <- collector.Visit("https://www.mercadolivre.com.br/ofertas")

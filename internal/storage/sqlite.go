@@ -43,14 +43,48 @@ func createSchema(ctx context.Context, db *sql.DB) error {
 	const statement = `
 CREATE TABLE IF NOT EXISTS offers (
 	id TEXT PRIMARY KEY,
-	title TEXT NOT NULL,
-	price REAL NOT NULL,
-	url TEXT NOT NULL,
-	image_url TEXT NOT NULL
+	title TEXT,
+	price REAL,
+	url TEXT,
+	created_at DATETIME
 );
 `
-	_, err := db.ExecContext(ctx, statement)
-	return err
+
+	if _, err := db.ExecContext(ctx, statement); err != nil {
+		return err
+	}
+
+	// Ensure `title` column exists on older DBs that might lack it.
+	rows, err := db.QueryContext(ctx, "PRAGMA table_info(offers)")
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+
+	foundTitle := false
+	for rows.Next() {
+		var cid int
+		var name string
+		var ctype string
+		var notnull int
+		var dflt sql.NullString
+		var pk int
+		if err := rows.Scan(&cid, &name, &ctype, &notnull, &dflt, &pk); err != nil {
+			return err
+		}
+		if name == "title" {
+			foundTitle = true
+			break
+		}
+	}
+
+	if !foundTitle {
+		if _, err := db.ExecContext(ctx, "ALTER TABLE offers ADD COLUMN title TEXT"); err != nil {
+			return err
+		}
+	}
+
+	return nil
 }
 
 func (s *Storage) IsNewOffer(ctx context.Context, id string) (bool, error) {
@@ -66,13 +100,14 @@ func (s *Storage) IsNewOffer(ctx context.Context, id string) (bool, error) {
 }
 
 func (s *Storage) MarkAsPosted(ctx context.Context, offer models.Offer) error {
-	const statement = `INSERT INTO offers (id, title, price, url, image_url) VALUES (?, ?, ?, ?, ?)`
+	const statement = `INSERT OR IGNORE INTO offers (id, title, price, url, image_url, created_at) VALUES (?, ?, ?, ?, ?, ?)`
 	_, err := s.db.ExecContext(ctx, statement,
 		offer.ID,
 		offer.Title,
 		offer.Price,
 		offer.Permalink,
 		offer.ImageURL,
+		time.Now().UTC(),
 	)
 	if err != nil {
 		return fmt.Errorf("failed to save offer %s: %w", offer.ID, err)

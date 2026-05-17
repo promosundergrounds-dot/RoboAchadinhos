@@ -143,10 +143,10 @@ func offerQualifies(offer models.Offer) bool {
 		return false
 	}
 
-	if offer.Price < 10 {
+	if offer.Price <= 10 {
 		return false
 	}
 
 	discount := ((offer.OriginalPrice - offer.Price) / offer.OriginalPrice) * 100
-	return discount >= 10
+	return discount > 5
 }

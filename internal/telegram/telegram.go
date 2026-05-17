@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"html"
+	"os"
 	"strings"
 
 	"log/slog"
@@ -57,34 +58,39 @@ func (s *Sender) SendOffer(ctx context.Context, offer models.Offer, affiliateURL
 
 	caption := strings.Join(captionLines, "\n")
 
-	if offer.ImageURL == "" {
-		text := fmt.Sprintf("<b>🏷️ %s</b>\n💰 <b>Preço:</b> R$ %.2f\n🎟️ Verifique se há cupom disponível na página!\n🔗 <a href=\"%s\">Link de Compra</a>",
-			html.EscapeString(offer.Title),
-			offer.Price,
-			html.EscapeString(affiliateURL),
-		)
+	imageURL := offer.ImageURL
+	if imageURL == "" {
+		// Try default image from env first, otherwise fall back to text message
+		imageURL = strings.TrimSpace(os.Getenv("TELEGRAM_DEFAULT_IMAGE"))
+		if imageURL == "" {
+			text := fmt.Sprintf("<b>🏷️ %s</b>\n💰 <b>Preço:</b> R$ %.2f\n🎟️ Verifique se há cupom disponível na página!\n🔗 <a href=\"%s\">Link de Compra</a>",
+				html.EscapeString(offer.Title),
+				offer.Price,
+				html.EscapeString(affiliateURL),
+			)
 
-		var msg tgbotapi.MessageConfig
-		if strings.HasPrefix(s.chatID, "@") {
-			msg = tgbotapi.NewMessageToChannel(strings.TrimPrefix(s.chatID, "@"), text)
-		} else {
-			msg = tgbotapi.NewMessage(parseChatID(s.chatID), text)
+			var msg tgbotapi.MessageConfig
+			if strings.HasPrefix(s.chatID, "@") {
+				msg = tgbotapi.NewMessageToChannel(strings.TrimPrefix(s.chatID, "@"), text)
+			} else {
+				msg = tgbotapi.NewMessage(parseChatID(s.chatID), text)
+			}
+			msg.ParseMode = "HTML"
+
+			if _, err := s.bot.Send(msg); err != nil {
+				return err
+			}
+
+			s.logger.Info("telegram fallback message sent", "offer_id", offer.ID, "chat_id", s.chatID)
+			return nil
 		}
-		msg.ParseMode = "HTML"
-
-		if _, err := s.bot.Send(msg); err != nil {
-			return err
-		}
-
-		s.logger.Info("telegram fallback message sent", "offer_id", offer.ID, "chat_id", s.chatID)
-		return nil
 	}
 
 	var photoMsg tgbotapi.PhotoConfig
 	if strings.HasPrefix(s.chatID, "@") {
-		photoMsg = tgbotapi.NewPhotoToChannel(strings.TrimPrefix(s.chatID, "@"), tgbotapi.FileURL(offer.ImageURL))
+		photoMsg = tgbotapi.NewPhotoToChannel(strings.TrimPrefix(s.chatID, "@"), tgbotapi.FileURL(imageURL))
 	} else {
-		photoMsg = tgbotapi.NewPhoto(parseChatID(s.chatID), tgbotapi.FileURL(offer.ImageURL))
+		photoMsg = tgbotapi.NewPhoto(parseChatID(s.chatID), tgbotapi.FileURL(imageURL))
 	}
 
 	photoMsg.Caption = caption
