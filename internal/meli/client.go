@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -12,6 +13,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/spf13/viper"
 	"log/slog"
 	"underground/robo-achadinhos/internal/config"
 	"underground/robo-achadinhos/internal/models"
@@ -46,6 +48,78 @@ type searchResponse struct {
 type refreshTokenResponse struct {
 	AccessToken  string `json:"access_token"`
 	RefreshToken string `json:"refresh_token"`
+}
+
+type TokenResponse struct {
+	AccessToken  string `json:"access_token"`
+	RefreshToken string `json:"refresh_token"`
+	ExpiresIn    int    `json:"expires_in"`
+	Scope        string `json:"scope"`
+	UserID       int    `json:"user_id"`
+}
+
+func ExchangeCode(envPath, code string) (*TokenResponse, error) {
+	v := viper.New()
+	v.SetConfigFile(envPath)
+	v.SetConfigType("env")
+	if err := v.ReadInConfig(); err != nil {
+		var cfgErr viper.ConfigFileNotFoundError
+		if !errors.As(err, &cfgErr) {
+			return nil, err
+		}
+	}
+
+	clientID := strings.TrimSpace(v.GetString("MELI_CLIENT_ID"))
+	clientSecret := strings.TrimSpace(v.GetString("MELI_CLIENT_SECRET"))
+	redirectURI := firstNonEmpty(strings.TrimSpace(v.GetString("MELI_REDIRECT_URI")), strings.TrimSpace(v.GetString("REDIRECT_URI")))
+
+	if clientID == "" || clientSecret == "" || redirectURI == "" {
+		return nil, fmt.Errorf("missing required env values: MELI_CLIENT_ID, MELI_CLIENT_SECRET, MELI_REDIRECT_URI or REDIRECT_URI")
+	}
+
+	form := url.Values{}
+	form.Set("grant_type", "authorization_code")
+	form.Set("client_id", clientID)
+	form.Set("client_secret", clientSecret)
+	form.Set("code", code)
+	form.Set("redirect_uri", redirectURI)
+
+	resp, err := http.PostForm("https://api.mercadolibre.com/oauth/token", form)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, err
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("oauth failed status=%d body=%s", resp.StatusCode, strings.TrimSpace(string(body)))
+	}
+
+	var token TokenResponse
+	if err := json.Unmarshal(body, &token); err != nil {
+		return nil, err
+	}
+
+	v.Set("MELI_ACCESS_TOKEN", token.AccessToken)
+	v.Set("MELI_REFRESH_TOKEN", token.RefreshToken)
+	if err := v.WriteConfigAs(envPath); err != nil {
+		return nil, err
+	}
+
+	return &token, nil
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return value
+		}
+	}
+	return ""
 }
 
 func NewClient(cfg *config.Config, logger *slog.Logger) *MeliClient {
@@ -269,26 +343,4 @@ func cloneRequest(req *http.Request) (*http.Request, error) {
 	req.Body = io.NopCloser(bytes.NewReader(content))
 
 	return clone, nil
-}
-
-// Exemplo do que precisa ter no seu internal/meli/client.go
-func (c *MeliClient) RefreshToken() error {
-	url := "https://api.mercadolibre.com/oauth/token"
-
-	// Dados para o POST
-	data := url.Values{}
-	data.Set("grant_type", "refresh_token")
-	data.Set("client_id", c.Config.ClientID)
-	data.Set("client_secret", c.Config.ClientSecret)
-	data.Set("refresh_token", c.Config.RefreshToken)
-
-	resp, err := http.PostForm(url, data)
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-
-	// Aqui você decodifica o novo access_token e o novo refresh_token
-	// IMPORTANTE: Você precisa salvar o novo refresh_token no seu .env ou banco!
-	return nil
 }

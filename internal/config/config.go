@@ -42,7 +42,7 @@ func LoadConfig(envPath string) (*Config, error) {
 		TelegramChatID:   chatIDStr,
 		DBPath:           firstNonEmpty(os.Getenv("DB_PATH"), "offers.db"),
 		MELIAffiliateID:  os.Getenv("MELI_AFFILIATE_ID"),
-		RedirectURI:      os.Getenv("REDIRECT_URI"),
+		RedirectURI:      firstNonEmpty(os.Getenv("MELI_REDIRECT_URI"), os.Getenv("REDIRECT_URI")),
 		MELIAccessToken:  os.Getenv("MELI_ACCESS_TOKEN"),
 		MELIClientID:     os.Getenv("MELI_CLIENT_ID"),
 		MELIClientSecret: os.Getenv("MELI_CLIENT_SECRET"),
