@@ -3,11 +3,12 @@ package models
 import "net/url"
 
 type Offer struct {
-	ID        string  `json:"id"`
-	Title     string  `json:"title"`
-	Price     float64 `json:"price"`
-	ImageURL  string  `json:"image_url"`
-	Permalink string  `json:"permalink"`
+	ID            string  `json:"id"`
+	Title         string  `json:"title"`
+	Price         float64 `json:"price"`
+	OriginalPrice float64 `json:"original_price"`
+	ImageURL      string  `json:"image_url"`
+	Permalink     string  `json:"permalink"`
 }
 
 func (o Offer) AffiliateURL(affiliateID string) string {

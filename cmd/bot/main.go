@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"underground/robo-achadinhos/internal/config"
 	"underground/robo-achadinhos/internal/meli"
+	"underground/robo-achadinhos/internal/models"
 	"underground/robo-achadinhos/internal/storage"
 	"underground/robo-achadinhos/internal/telegram"
 )
@@ -19,13 +20,13 @@ func main() {
 
 	cfg, err := config.LoadConfig(".env")
 	if err != nil {
-		logger.Error("loading configuration", err)
+		logger.Error("loading configuration", "err", err)
 		os.Exit(1)
 	}
 
 	storageClient, err := storage.NewStorage(cfg.DBPath, logger)
 	if err != nil {
-		logger.Error("initializing storage", err)
+		logger.Error("initializing storage", "err", err)
 		os.Exit(1)
 	}
 	defer storageClient.Close()
@@ -34,7 +35,7 @@ func main() {
 
 	telegramSender, err := telegram.NewSender(cfg.TelegramBotToken, cfg.TelegramChatID, logger)
 	if err != nil {
-		logger.Error("initializing telegram sender", err)
+		logger.Error("initializing telegram sender", "err", err)
 		os.Exit(1)
 	}
 
@@ -74,14 +75,19 @@ func runCycle(ctx context.Context, cfg *config.Config, meliClient *meli.MeliClie
 
 	offers, err := meliClient.SearchOffers(cycleCtx)
 	if err != nil {
-		logger.Error("failed to fetch offers", err)
+		logger.Error("failed to fetch offers", "err", err)
 		return
 	}
 
+	sent := false
 	for _, offer := range offers {
+		if !offerQualifies(offer) {
+			continue
+		}
+
 		isNew, err := storageClient.IsNewOffer(cycleCtx, offer.ID)
 		if err != nil {
-			logger.Error("checking offer existence", err, "offer_id", offer.ID)
+			logger.Error("checking offer existence", "err", err, "offer_id", offer.ID)
 			continue
 		}
 
@@ -91,15 +97,34 @@ func runCycle(ctx context.Context, cfg *config.Config, meliClient *meli.MeliClie
 
 		affiliateURL := offer.AffiliateURL(cfg.MELIAffiliateID)
 		if err := telegramSender.SendOffer(cycleCtx, offer, affiliateURL); err != nil {
-			logger.Error("failed to send telegram message", err, "offer_id", offer.ID)
+			logger.Error("failed to send telegram message", "err", err, "offer_id", offer.ID)
 			continue
 		}
 
 		if err := storageClient.MarkAsPosted(cycleCtx, offer); err != nil {
-			logger.Error("failed to save posted offer", err, "offer_id", offer.ID)
-			continue
+			logger.Error("failed to save posted offer", "err", err, "offer_id", offer.ID)
 		}
+
+		sent = true
+		break
+	}
+
+	if !sent {
+		logger.Info("no qualifying offer found this cycle")
 	}
 
 	logger.Info("search cycle completed", "offers_total", len(offers))
+}
+
+func offerQualifies(offer models.Offer) bool {
+	if offer.OriginalPrice <= 0 {
+		return false
+	}
+
+	if offer.Price < 30 {
+		return false
+	}
+
+	discount := ((offer.OriginalPrice - offer.Price) / offer.OriginalPrice) * 100
+	return discount >= 20
 }

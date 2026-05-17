@@ -15,6 +15,7 @@ import (
 	"log/slog"
 	"underground/robo-achadinhos/internal/config"
 	"underground/robo-achadinhos/internal/models"
+	"underground/robo-achadinhos/internal/scraper"
 )
 
 type MeliClient struct {
@@ -33,11 +34,12 @@ type authTransport struct {
 
 type searchResponse struct {
 	Results []struct {
-		ID        string  `json:"id"`
-		Title     string  `json:"title"`
-		Price     float64 `json:"price"`
-		Thumbnail string  `json:"thumbnail"`
-		Permalink string  `json:"permalink"`
+		ID            string  `json:"id"`
+		Title         string  `json:"title"`
+		Price         float64 `json:"price"`
+		OriginalPrice float64 `json:"original_price"`
+		Thumbnail     string  `json:"thumbnail"`
+		Permalink     string  `json:"permalink"`
 	} `json:"results"`
 }
 
@@ -63,26 +65,23 @@ func NewClient(cfg *config.Config, logger *slog.Logger) *MeliClient {
 }
 
 func (c *MeliClient) SearchOffers(ctx context.Context) ([]models.Offer, error) {
-	// Try with authentication first
-	offers, err := c.searchWithAuth(ctx)
-	if err == nil {
-		return offers, nil
-	}
-
-	c.logger.Warn("authenticated search failed, trying without authentication", "error", err)
-	return c.searchWithoutAuth(ctx)
+	return scraper.SearchOffers(ctx)
 }
 
 func (c *MeliClient) searchWithAuth(ctx context.Context) ([]models.Offer, error) {
+	if c.getAccessToken() == "" {
+		return nil, fmt.Errorf("MELI_ACCESS_TOKEN is required")
+	}
+
 	endpoint, err := url.Parse(c.baseURL + "/sites/MLB/search")
 	if err != nil {
 		return nil, err
 	}
 
 	query := endpoint.Query()
-	query.Set("q", "")
-	query.Set("limit", "50")
-	query.Set("offset", "0")
+	query.Set("highlights", "promotions")
+	query.Set("status", "active")
+	query.Set("limit", "15")
 	endpoint.RawQuery = query.Encode()
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint.String(), nil)
@@ -91,46 +90,24 @@ func (c *MeliClient) searchWithAuth(ctx context.Context) ([]models.Offer, error)
 	}
 
 	req.Header.Set("Authorization", "Bearer "+c.getAccessToken())
+	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+	req.Header.Set("Accept", "application/json")
+
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
 		return nil, err
 	}
 	defer resp.Body.Close()
 
+	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
+		body, _ := io.ReadAll(resp.Body)
+		c.logger.Error("Erro de autenticação. O token MELI_ACCESS_TOKEN provavelmente expirou", "status", resp.StatusCode, "body", strings.TrimSpace(string(body)))
+		return nil, fmt.Errorf("autenticacao mercadolivre falhou: status %d body=%s", resp.StatusCode, strings.TrimSpace(string(body)))
+	}
+
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
 		return nil, fmt.Errorf("authenticated search failed status=%d body=%s", resp.StatusCode, strings.TrimSpace(string(body)))
-	}
-
-	return c.parseSearchResponse(resp)
-}
-
-func (c *MeliClient) searchWithoutAuth(ctx context.Context) ([]models.Offer, error) {
-	endpoint, err := url.Parse(c.baseURL + "/sites/MLB/search")
-	if err != nil {
-		return nil, err
-	}
-
-	query := endpoint.Query()
-	query.Set("q", "")
-	query.Set("limit", "50")
-	query.Set("offset", "0")
-	endpoint.RawQuery = query.Encode()
-
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint.String(), nil)
-	if err != nil {
-		return nil, err
-	}
-
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("public search failed status=%d body=%s", resp.StatusCode, strings.TrimSpace(string(body)))
 	}
 
 	return c.parseSearchResponse(resp)
@@ -145,16 +122,24 @@ func (c *MeliClient) parseSearchResponse(resp *http.Response) ([]models.Offer, e
 	offers := make([]models.Offer, 0, len(parsed.Results))
 	for _, item := range parsed.Results {
 		offers = append(offers, models.Offer{
-			ID:        item.ID,
-			Title:     item.Title,
-			Price:     item.Price,
-			ImageURL:  item.Thumbnail,
-			Permalink: item.Permalink,
+			ID:            item.ID,
+			Title:         item.Title,
+			Price:         item.Price,
+			OriginalPrice: item.OriginalPrice,
+			ImageURL:      upgradeThumbnail(item.Thumbnail),
+			Permalink:     item.Permalink,
 		})
 	}
 
 	c.logger.Info("offers fetched", "count", len(offers))
 	return offers, nil
+}
+
+func upgradeThumbnail(thumbnail string) string {
+	if thumbnail == "" {
+		return thumbnail
+	}
+	return strings.Replace(thumbnail, "-I.jpg", "-F.jpg", 1)
 }
 
 func (c *MeliClient) refreshAccessToken(ctx context.Context) error {
